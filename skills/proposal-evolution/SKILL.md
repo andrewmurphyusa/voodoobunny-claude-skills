@@ -10,15 +10,20 @@ The skill reads the proposal, understands the create-meta-prompts intake expecta
 </objective>
 
 <quick_start>
-**Usage:** Invoke with the project subfolder name, and optionally a proposal filename.
+**Usage:** Invoke with an optional project identifier and an optional proposal filename.
 
 ```
-/proposal-to-metaprompt buckeye-consultant
-/proposal-to-metaprompt buckeye-consultant prompts/my-custom-proposal.md
-/proposal-to-metaprompt buckeye-consultant C:/full/path/to/proposal.md
+/proposal-evolution                                          # use current directory
+/proposal-evolution buckeye-consultant                       # named project under idea-projects-with-tasche/
+/proposal-evolution buckeye-consultant prompts/my-custom-proposal.md
+/proposal-evolution /absolute/path/to/project               # explicit absolute path
+/proposal-evolution . prompts/my-custom-proposal.md         # current directory, specific file
 ```
 
-- **First argument (required):** Subfolder name under `C:/source code 2/idea-projects-with-tasche/`
+- **First argument (optional):** One of:
+  - Omitted or `.` → use the **current working directory** as the project root
+  - An absolute path → use that directory as the project root
+  - A plain name (no slashes) → treated as a subfolder under `C:/source code 2/idea-projects-with-tasche/`
 - **Second argument (optional):** Relative path (from project root) or absolute path to the proposal file *OR* "latest" to auto-detect the latest user-generated proposal file in the project prompts directory.
 
 - if the second argument is a specific filename and not "latest", the skill will look for that file (first resolving it relative to the project root if it's not an absolute path) and use it as the proposal. If the file does not exist, it will report an error and stop.
@@ -51,14 +56,13 @@ Create-meta-prompts skill: @C:/source code 2/taches-claude-code-resources/skills
 **Validate inputs and resolve paths**
 
 Parse the arguments:
-- **Arg 1 (required):** Project subfolder name (e.g., `buckeye-consultant`)
-  - If not provided, ask: "What is the project subfolder name? (under idea-projects-with-tasche/)"
+- **Arg 1 (optional):** Project identifier — see rules below
 - **Arg 2 (optional):** Proposal filename (relative or absolute path)
 
-Resolve the project root:
-```
-<project-root> = C:/source code 2/idea-projects-with-tasche/<arg1>/
-```
+Resolve the project root using these rules (in order):
+1. If Arg 1 is absent or is `.` → `<project-root>` = current working directory
+2. If Arg 1 is an absolute path → `<project-root>` = that path
+3. If Arg 1 contains no path separators (plain name) → `<project-root>` = `C:/source code 2/idea-projects-with-tasche/<arg1>/`
 
 Validate the project root directory exists. If not, report the error and stop.
 
