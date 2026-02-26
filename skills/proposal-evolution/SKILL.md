@@ -14,8 +14,8 @@ The skill reads the proposal, understands the create-meta-prompts intake expecta
 
 ```
 /proposal-evolution                                          # use current directory
-/proposal-evolution buckeye-consultant                       # named project under idea-projects-with-tasche/
-/proposal-evolution buckeye-consultant prompts/my-custom-proposal.md
+/proposal-evolution <project-name>  >                       # named project under idea-projects-with-tasche/
+/proposal-evolution <project-name> prompts/<my-custom-proposal.md>   # named project with specific proposal file
 /proposal-evolution /absolute/path/to/project               # explicit absolute path
 /proposal-evolution . prompts/my-custom-proposal.md         # current directory, specific file
 ```
