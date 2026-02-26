@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "My personal collection of Claude skills",
-    "version": "1.0.1"
+    "version": "1.0.2"
   },
   "plugins": [
     {
-      "name": "voodoobunny-claude-skills",
+      "name": "proposal-evolution",
       "source": "./",
-      "description": "My collection of Claude skills",
-      "version": "1.0.1",
+      "description": "Converts a project proposal into a prompt optimized for the taches create-meta-prompts skill",
+      "version": "1.0.2",
       "strict": true
     }
   ]
