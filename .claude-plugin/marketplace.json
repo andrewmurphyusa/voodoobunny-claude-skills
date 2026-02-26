@@ -1,0 +1,20 @@
+{
+  "name": "voodoobunny-claude-skills",
+  "owner": {
+    "name": "Andrew Murphy",
+    "email": "voodoobunny@hotmail.com"
+  },
+  "metadata": {
+    "description": "My personal collection of Claude skills",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "voodoobunny-claude-skills",
+      "source": "./",
+      "description": "My collection of Claude skills",
+      "version": "1.0.0",
+      "strict": true
+    }
+  ]
+}
