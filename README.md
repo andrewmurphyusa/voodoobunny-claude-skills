@@ -12,6 +12,7 @@ The two-step install on any machine is:
 ```
 /plugin install proposal-evolution@voodoobunny-claude-skills
 /plugin install article-fact-checker@voodoobunny-claude-skills
+/plugin install session-retro@voodoobunny-claude-skills
 ```
 
 Or equivalently as CLI commands (outside Claude Code):
@@ -20,6 +21,7 @@ Or equivalently as CLI commands (outside Claude Code):
 claude plugin marketplace add andrewmurphyusa/voodoobunny-claude-skills
 claude plugin install proposal-evolution@voodoobunny-claude-skills
 claude plugin install article-fact-checker@voodoobunny-claude-skills
+claude plugin install session-retro@voodoobunny-claude-skills
 ```
 
 ## Skills
@@ -29,3 +31,6 @@ Converts a project proposal into a prompt optimized for the taches `create-meta-
 
 ### article-fact-checker
 Evaluates the factual reliability of any article. Accepts article text, a URL, or both. Checks historical and current facts, quote accuracy, numerical claims, whether cited sources actually support what the article claims they support, and whether the article uses language designed to suppress critical thinking. Returns a structured report with per-claim verdicts, reliability scores, and evidence citations.
+
+### session-retro
+Analyzes past Claude Code session transcripts for token efficiency, usage habits, and API-equivalent cost attribution. A deterministic Python parser (stdlib only) aggregates the raw session JSONL into compact metrics and a summary; Claude then reads condensed extracts of selected sessions to attribute causes, propose counterfactuals, and tag each recommendation as a safe cut or load-bearing spend. Complements — never duplicates — counters like ccusage. All analysis stays local.

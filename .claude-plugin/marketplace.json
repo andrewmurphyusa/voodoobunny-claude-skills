@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "My personal collection of Claude skills",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "plugins": [
     {
@@ -27,6 +27,13 @@
       "name": "facebook-article-fact-checker-adapter",
       "source": "./",
       "description": "Facebook-specific adapter that extracts article content shared via Facebook posts and delegates to article-fact-checker. Also analyzes whether the Facebook post itself adds misleading framing beyond the linked article.",
+      "version": "1.0.0",
+      "strict": true
+    },
+    {
+      "name": "session-retro",
+      "source": "./",
+      "description": "Analyzes past Claude Code session transcripts for token efficiency, usage habits, and API-equivalent cost attribution. A deterministic parser aggregates session JSONL into compact metrics; Claude then judges causes, counterfactuals, and safe cuts vs load-bearing spend.",
       "version": "1.0.0",
       "strict": true
     }
