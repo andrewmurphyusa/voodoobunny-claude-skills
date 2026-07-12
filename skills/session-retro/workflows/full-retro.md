@@ -7,7 +7,7 @@
 </required_reading>
 
 <process>
-1. **Run the scan.** `python scripts/parse_sessions.py scan` (add `--claude-dir`, `--project`, `--since`, `--top`, `--sonnet5-intro`, or `--pricing-file` if the user specified scope or pricing constraints). This writes `metrics.json` and `summary.md` to a new `~/.claude/session-retro/runs/<YYYYMMDD-HHMMSS>/` directory. Note this run directory path — the report gets written there.
+1. **Run the scan.** `python scripts/parse_sessions.py scan` (add `--claude-dir`, `--project`, `--since`, `--top`, `--sonnet5-intro`, or `--pricing-file` if the user specified scope or pricing constraints; add `--wiki-dir` if the user named a sessions wiki other than the configured default, or `--no-wiki` if they want source-only parsing). This writes `metrics.json` and `summary.md` to a new `~/.claude/session-retro/runs/<YYYYMMDD-HHMMSS>/` directory. Note this run directory path — the report gets written there. Note the `sessions_from_wiki` / `sessions_from_jsonl` provenance split when a wiki was used.
 
 2. **Read `summary.md`.** This is the aggregate view: overall totals, per-project table, top-10 sessions by cost with flags, aggregate waste, model mix, and hint lines with exact `extract` commands. Do not re-derive any of these numbers yourself — read them as given.
 
@@ -18,7 +18,7 @@
 
    De-duplicate the resulting list by session id. Note in the eventual report which selection reason(s) applied to each session.
 
-4. **Extract and read each selected session.** For each session id in the sample, run `python scripts/parse_sessions.py extract <path-to-session.jsonl>` (add `--max-text`/`--max-tool` only if a session's default extract is still too large to read comfortably) and read the condensed transcript output. This is the only per-session reading step — never open the raw `.jsonl`.
+4. **Read each selected session.** For sessions whose record has `"source": "wiki"`, read the wiki page at `wiki_page` first (its `## Summary`, `## Outcome`, and verbatim `## Prompts` sections stand in for the condensed transcript); run `extract` on such a session only when a candidate finding needs request-level detail the page lacks (e.g. exact tool-result contents or per-turn ordering). For `"source": "jsonl"` sessions, run `python scripts/parse_sessions.py extract <path-to-session.jsonl>` (add `--max-text`/`--max-tool` only if a session's default extract is still too large to read comfortably) and read the condensed transcript output. Either way, never open the raw `.jsonl`.
 
 5. **Apply the rubrics.** For each candidate finding surfaced while reading the extracts, run it through `references/analysis-rubrics.md`: confirm it has session id + timestamp/request index + quoted evidence, classify safe-cut vs load-bearing where applicable, and keep counterfactuals honest (state assumptions, give ranges, flag small-sample caveats — especially for the 2 random-sample sessions, which are not representative on their own).
 
@@ -34,8 +34,8 @@
 <success_criteria>
 - `scan` was run and its run directory identified; no metrics were hand-computed outside the script.
 - The session sample was built using exactly the specified rule (top 3 by cost + all flagged + 2 random with >=5 user prompts), de-duplicated, with selection reasons recorded.
-- Every selected session was read via `extract`, never via a raw read of the `.jsonl` file.
-- Every finding in the final report cites a session id and evidence, per `references/analysis-rubrics.md`.
+- Every selected session was read via its wiki page (if `"source": "wiki"`) or `extract`, never via a raw read of the `.jsonl` file.
+- Every finding in the final report cites a session id and evidence, per `references/analysis-rubrics.md`; wiki-sourced findings may cite the wiki page path + quoted page content as evidence.
 - Every efficiency recommendation is tagged safe-cut or load-bearing.
 - All dollar figures are explicitly framed as counterfactual API-equivalent cost, not real spend.
 - `report.md` was written into the same run directory as `metrics.json`/`summary.md`.

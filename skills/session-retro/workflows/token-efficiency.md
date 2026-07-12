@@ -6,9 +6,9 @@
 <process>
 This workflow answers exactly one question: **where could token usage have been reduced without reducing quality?** It does not touch usage-habit or cost-attribution territory — stay focused on mechanics of token spend within sessions.
 
-1. **Run the scan.** `python scripts/parse_sessions.py scan` (pass `--project`/`--since`/`--top` if the user scoped the request). Read the resulting `summary.md` for the aggregate view: flagged sessions, aggregate waste, top sessions by cost.
+1. **Run the scan.** `python scripts/parse_sessions.py scan` (pass `--project`/`--since`/`--top` if the user scoped the request; `--wiki-dir`/`--no-wiki` per the user's wiki preference — the configured sessions wiki is used automatically when present). Read the resulting `summary.md` for the aggregate view: flagged sessions, aggregate waste, top sessions by cost, and the wiki/JSONL provenance split.
 
-2. **Select sessions to inspect closely.** Prioritize sessions flagged `GAP_REWRITES`, `REPEAT_READS`, `LARGE_TOOL_RESULTS`, `LONG_CONTEXT`, or `MANY_TURNS`, plus the top few by estimated cost if not already flagged. Run `python scripts/parse_sessions.py extract <session.jsonl>` on each and read the condensed transcript.
+2. **Select sessions to inspect closely.** Prioritize sessions flagged `GAP_REWRITES`, `REPEAT_READS`, `LARGE_TOOL_RESULTS`, `LONG_CONTEXT`, or `MANY_TURNS`, plus the top few by estimated cost if not already flagged. For `"source": "wiki"` records, read the wiki page (`wiki_page` in the record) first and fall back to `extract` only when the page lacks the request-level detail a focus area needs; for `"source": "jsonl"` records, run `python scripts/parse_sessions.py extract <session.jsonl>` and read the condensed transcript. (Gap-rewrite and large-tool-result checks below often need extract-level detail; Summary/Outcome/Prompts on the page usually cover the rest.)
 
 3. **Work each focus area using the extract + metrics.json data:**
    - **Gap rewrites** — sessions/requests where `metrics.json` shows a gap-rewrite event (cache expired mid-session due to a long pause, forcing an expensive cache-write re-send). Confirm in the extract whether the gap was avoidable (idle time between unrelated turns — safe cut, e.g. "batch your questions instead of trickling them in") or necessary (waiting on genuinely long-running external work — load-bearing).
@@ -25,7 +25,7 @@ This workflow answers exactly one question: **where could token usage have been 
 <success_criteria>
 - Scan was run; no aggregate numbers were hand-computed.
 - All five focus areas (gap rewrites, re-reads, large tool results, long-context sessions, subagent opportunities) were considered, not just whichever was most visible in `summary.md`.
-- Sessions were inspected via `extract`, never via a raw `.jsonl` read.
+- Sessions were inspected via their wiki page or `extract`, never via a raw `.jsonl` read.
 - Every recommendation cites session id + evidence and carries an explicit safe-cut/load-bearing tag with rationale.
 - Every dollar figure is framed as counterfactual API-equivalent cost, sourced from `references/pricing.md` math.
 - No usage-habit or cost-attribution content leaked into this workflow's output — it stays scoped to token-efficiency mechanics.

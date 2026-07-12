@@ -2,6 +2,8 @@
 
 > **Cached 2026-07-07.** If it is more than a month stale when you read this, verify current pricing via the `claude-api` skill before computing any costs. Do not compute costs off stale numbers without checking.
 
+> **Sessions-wiki consistency guarantee:** wiki pages built by `build-sessions-wiki` contain **no dollar figures by design** — only token counts. Every dollar in a retro report is computed at retro run time from the pricing table below (or a `--pricing-file` override), whether the session was read from the wiki or parsed from JSONL. Reports therefore stay internally consistent and comparable even when wiki pages were indexed months earlier under different rates — updating this table (or the script's `DEFAULT_PRICING`) is sufficient; the wiki never needs re-indexing for a price change.
+
 ## Rates (USD per million tokens, input / output)
 
 | Model family | Input | Output |

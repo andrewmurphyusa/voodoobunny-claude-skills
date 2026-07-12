@@ -11,7 +11,7 @@ This workflow answers exactly one question: **where did the API-equivalent cost 
 
 1. **Establish ground truth.** If the user has `npx ccusage` output available (or can run it), treat its totals as authoritative for overall spend/session counts. If not available, note that this workflow's totals come solely from `scripts/parse_sessions.py scan` and may drift slightly from ccusage due to differing dedup/model-resolution assumptions — say so rather than presenting the script's totals as unquestionable ground truth.
 
-2. **Run the scan:** `python scripts/parse_sessions.py scan` (with `--sonnet5-intro` if the analysis window falls within the Sonnet 5 intro pricing period — check `references/pricing.md` for the cutoff date before deciding). Read `summary.md` and `metrics.json` for per-session and per-category cost breakdowns.
+2. **Run the scan:** `python scripts/parse_sessions.py scan` (with `--sonnet5-intro` if the analysis window falls within the Sonnet 5 intro pricing period — check `references/pricing.md` for the cutoff date before deciding; `--wiki-dir`/`--no-wiki` per the user's wiki preference — the configured sessions wiki is used automatically when present). Read `summary.md` and `metrics.json` for per-session and per-category cost breakdowns. Wiki-sourced sessions are safe for dollar work: the wiki stores only token counts, and the scan prices them with the same current pricing table used for JSONL-parsed sessions, so figures are directly comparable regardless of when a page was indexed.
 
 3. **Attribute cost to categories**, building a category table from `metrics.json` figures (do not hand-compute — read the script's numbers):
    - **Cache-rewrite waste** — dollar cost of gap-rewrite events (cache expired and had to be rewritten at the 1.25x/2.0x premium instead of read at 0.1x).
@@ -19,7 +19,7 @@ This workflow answers exactly one question: **where did the API-equivalent cost 
    - **MCP/context overhead** — cost attributable to large tool results and elevated baseline context (tool definitions, MCP server instructions) rather than to the substantive conversation, where visible in the extract for sampled sessions.
    - **Everything else** — the remainder, i.e. cost that went toward the actual work product.
 
-   For any category where `metrics.json` doesn't provide a direct figure, extract a small sample of the relevant sessions (`python scripts/parse_sessions.py extract <file>`) to estimate it, and clearly mark the figure as an estimate with its basis.
+   For any category where `metrics.json` doesn't provide a direct figure, sample the relevant sessions — via their wiki page for `"source": "wiki"` records (the page's `## Metrics` json block includes tool-use counts and large-tool-result sizes), or `python scripts/parse_sessions.py extract <file>` otherwise — to estimate it, and clearly mark the figure as an estimate with its basis.
 
 4. **Build counterfactuals.** For each significant waste category or flagged session, state a specific counterfactual with an explicit, stated assumption and a range rather than false precision, e.g.:
    - "Compacting or restarting the session at request #N (when context hit ~X tokens) instead of continuing to request #M would have saved an estimated $Y-$Z in cache-write premiums, based on the growth rate observed between N and M."
@@ -29,7 +29,7 @@ This workflow answers exactly one question: **where did the API-equivalent cost 
 
 5. **Report pricing both ways.** Because Sonnet 5 has an introductory rate through 2026-08-31 per `references/pricing.md`, present cost figures for any window touching that period using both the intro rate and the standard post-intro rate, so the report remains useful after the intro period ends. Label clearly which figure is which.
 
-6. **Compute cost-per-completed-task.** For sessions where the extract makes the outcome clear (task completed, abandoned, or handed off), compute an approximate API-equivalent cost per completed task = total session cost / count of tasks that reached a working/shipped state in that session. Note sessions where the outcome is ambiguous rather than forcing a number.
+6. **Compute cost-per-completed-task.** For sessions where the outcome is clear — a wiki page's `## Outcome` section states it directly for `"source": "wiki"` sessions; otherwise the extract — compute an approximate API-equivalent cost per completed task = total session cost / count of tasks that reached a working/shipped state in that session. Note sessions where the outcome is ambiguous rather than forcing a number.
 
 7. **Cross-check against ccusage** where available: note whether this workflow's totals are within a reasonable margin of ccusage's, and if not, flag the discrepancy rather than silently presenting divergent numbers.
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -469,6 +470,249 @@ def process_session_file(path: Path, project: str, args, pricing: dict, warnings
     }
 
 
+# ---------------------------------------------------------------------------
+# sessions-wiki integration
+#
+# The build-sessions-wiki skill maintains an LLM-wiki with one page per session.
+# Each page stores a "fully indexed" fingerprint (machine + source_mtime_epoch +
+# source_size across main JSONL + subagent transcripts) and a machine-generated,
+# PRICING-FREE metrics JSON block (token buckets per model, gap events in
+# tokens). When a session's fingerprint still matches the live files, scan can
+# build its record from the wiki page instead of re-parsing the JSONL, applying
+# THIS script's current pricing table to the stored token counts. Dollar
+# figures therefore never come from the wiki -- only tokens do.
+# ---------------------------------------------------------------------------
+
+def resolve_wiki_dir(args) -> Path | None:
+    """--no-wiki disables; --wiki-dir wins; else fall back to default_wiki_dir
+    in <claude-dir>/sessions-wiki/config.json (shared sessions-wiki config)."""
+    if getattr(args, "no_wiki", False):
+        return None
+    if getattr(args, "wiki_dir", None):
+        return Path(args.wiki_dir).expanduser()
+    config_path = Path(args.claude_dir).expanduser() / "sessions-wiki" / "config.json"
+    if config_path.is_file():
+        try:
+            with open(config_path, **FILE_ENCODING_KWARGS) as f:
+                cfg = json.load(f)
+            d = cfg.get("default_wiki_dir")
+            if d:
+                return Path(d).expanduser()
+        except Exception as e:
+            print(f"WARNING: could not read {config_path}: {e}", file=sys.stderr)
+    return None
+
+
+def parse_page_frontmatter(path: Path) -> dict | None:
+    """Parse the wiki page's flat 'key: value' frontmatter (--- delimited)."""
+    try:
+        with open(path, **FILE_ENCODING_KWARGS) as f:
+            if f.readline().strip() != "---":
+                return None
+            fm = {}
+            for line in f:
+                if line.strip() == "---":
+                    return fm
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    fm[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return None
+
+
+def collect_wiki_fingerprints(wiki_dir: Path, warnings: list) -> dict:
+    """Map session_id -> fingerprint info for every sessions/**/*.md page."""
+    pages = {}
+    sessions_dir = wiki_dir / "sessions"
+    if not sessions_dir.is_dir():
+        warnings.append(f"wiki dir {wiki_dir} has no sessions/ subdir; ignoring wiki")
+        return pages
+    for md in sorted(sessions_dir.rglob("*.md")):
+        fm = parse_page_frontmatter(md)
+        if not fm or "session_id" not in fm:
+            continue
+        try:
+            mtime_epoch = int(fm.get("source_mtime_epoch", "-1"))
+            size = int(fm.get("source_size", "-1"))
+        except ValueError:
+            continue
+        pages[fm["session_id"]] = {
+            "abs_page": md,
+            "page": str(md.relative_to(wiki_dir)).replace("\\", "/"),
+            "machine": fm.get("machine", ""),
+            "source_mtime_epoch": mtime_epoch,
+            "source_size": size,
+        }
+    return pages
+
+
+def session_source_stat(session_path: Path) -> tuple[int, int]:
+    """(max mtime epoch-seconds, total size) across main + subagent files --
+    must mirror wiki_tools.py's fingerprint computation exactly."""
+    mtime = 0
+    size = 0
+    for f in [session_path] + find_subagent_files(session_path):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        mtime = max(mtime, int(st.st_mtime))
+        size += st.st_size
+    return mtime, size
+
+
+def read_page_metrics_block(page_path: Path, warnings: list) -> dict | None:
+    """Extract the fenced json block under the '## Metrics' heading."""
+    try:
+        with open(page_path, **FILE_ENCODING_KWARGS) as f:
+            text = f.read()
+    except Exception as e:
+        warnings.append(f"{page_path}: could not read wiki page ({e})")
+        return None
+    idx = text.find("## Metrics")
+    if idx == -1:
+        return None
+    start = text.find("```json", idx)
+    if start == -1:
+        return None
+    start = text.find("\n", start) + 1
+    end = text.find("```", start)
+    if end == -1:
+        return None
+    try:
+        return json.loads(text[start:end])
+    except Exception as e:
+        warnings.append(f"{page_path}: malformed metrics JSON block ({e})")
+        return None
+
+
+def safe_rates(model_key: str, pricing: dict) -> tuple[float, float]:
+    try:
+        return rates_for(model_key, pricing)
+    except Exception:
+        return rates_for("opus", pricing)
+
+
+def session_record_from_wiki(wm: dict, project: str, jsonl_path: Path,
+                             page_rel: str, pricing: dict, args):
+    """Convert a wiki page's pricing-free metrics JSON into a session record
+    shaped exactly like process_session_file's output, pricing the stored
+    token buckets with the CURRENT pricing table. Returns the record dict,
+    "empty", "before_since", or None if the metrics are unusable."""
+    if not isinstance(wm, dict) or wm.get("empty"):
+        return "empty" if isinstance(wm, dict) and wm.get("empty") else None
+    if not wm.get("model_mix_main") and not wm.get("model_mix_sidechain"):
+        return None
+
+    if args.since_dt is not None:
+        last = parse_ts(wm.get("last_ts"))
+        if last is not None and last < args.since_dt:
+            return "before_since"
+
+    cost_totals = defaultdict(float)
+    model_mix = defaultdict(lambda: {"requests": 0, "cost": 0.0, "input_tokens": 0, "output_tokens": 0})
+    sidechain_cost = 0.0
+
+    for mix_name in ("model_mix_main", "model_mix_sidechain"):
+        for mk, b in (wm.get(mix_name) or {}).items():
+            if not isinstance(b, dict):
+                return None
+            input_rate, output_rate = safe_rates(mk, pricing)
+            ci = (b.get("input_tokens", 0) or 0) * input_rate / 1e6
+            ccr = (b.get("cache_read_tokens", 0) or 0) * CACHE_READ_MULTIPLIER * input_rate / 1e6
+            c5 = (b.get("cache_write_5m_tokens", 0) or 0) * CACHE_WRITE_5M_MULTIPLIER * input_rate / 1e6
+            c1 = (b.get("cache_write_1h_tokens", 0) or 0) * CACHE_WRITE_1H_MULTIPLIER * input_rate / 1e6
+            co = (b.get("output_tokens", 0) or 0) * output_rate / 1e6
+            total = ci + ccr + c5 + c1 + co
+            cost_totals["cost_input"] += ci
+            cost_totals["cost_cache_read"] += ccr
+            cost_totals["cost_cache_write_5m"] += c5
+            cost_totals["cost_cache_write_1h"] += c1
+            cost_totals["cost_output"] += co
+            cost_totals["cost_total"] += total
+            mm = model_mix[mk]
+            mm["requests"] += b.get("requests", 0) or 0
+            mm["cost"] += total
+            mm["input_tokens"] += b.get("input_tokens", 0) or 0
+            mm["output_tokens"] += b.get("output_tokens", 0) or 0
+            if mix_name == "model_mix_sidechain":
+                sidechain_cost += total
+
+    # Gap events: wiki stores tokens + model_key per event; price them now
+    # (same formula as the live path -- see references/pricing.md).
+    gap_events = []
+    wasted_usd_total = 0.0
+    for ev in wm.get("gap_events") or []:
+        input_rate, _ = safe_rates(ev.get("model_key", "opus"), pricing)
+        w5 = ev.get("cache_write_5m_tokens", 0) or 0
+        w1h = ev.get("cache_write_1h_tokens", 0) or 0
+        wasted_usd = (
+            w5 * (CACHE_WRITE_5M_MULTIPLIER - CACHE_READ_MULTIPLIER)
+            + w1h * (CACHE_WRITE_1H_MULTIPLIER - CACHE_READ_MULTIPLIER)
+        ) * input_rate / 1e6
+        wasted_usd_total += wasted_usd
+        gap_events.append({
+            "timestamp": ev.get("timestamp"),
+            "gap_seconds": ev.get("gap_seconds"),
+            "creation_tokens": ev.get("creation_tokens", 0),
+            "wasted_usd": round(wasted_usd, 4),
+        })
+
+    tokens = {k: (wm.get("tokens") or {}).get(k, 0) or 0
+              for k in ("input_tokens", "cache_read_tokens", "cache_write_5m_tokens",
+                        "cache_write_1h_tokens", "output_tokens")}
+    repeat_reads = wm.get("repeat_reads") or {}
+    large_tool_results = wm.get("large_tool_results") or []
+    context = wm.get("context") or {"first": 0, "max": 0, "last": 0}
+    unknown_models = wm.get("unknown_models") or []
+    total_requests = wm.get("requests", 0) or 0
+
+    # Recompute flags with THIS skill's thresholds (dollar-based where the
+    # original is dollar-based) -- never copy the wiki's token-based flags.
+    flags = []
+    if wasted_usd_total > GAP_WASTE_FLAG_USD:
+        flags.append("GAP_REWRITES")
+    files_ge2 = [n for n in repeat_reads.values() if n >= 2]
+    files_ge3 = [n for n in repeat_reads.values() if n >= 3]
+    if files_ge3 or len(files_ge2) >= 5:
+        flags.append("REPEAT_READS")
+    if any((r.get("est_tokens", 0) or 0) >= LARGE_TOOL_RESULT_TOKENS for r in large_tool_results):
+        flags.append("LARGE_TOOL_RESULTS")
+    if (context.get("last", 0) or 0) > LONG_CONTEXT_TOKENS:
+        flags.append("LONG_CONTEXT")
+    if total_requests > MANY_TURNS_THRESHOLD:
+        flags.append("MANY_TURNS")
+    if unknown_models:
+        flags.append("UNKNOWN_MODEL")
+
+    return {
+        "session_id": wm.get("session_id") or jsonl_path.stem,
+        "project": project,
+        "path": str(jsonl_path),
+        "first_ts": wm.get("first_ts"),
+        "last_ts": wm.get("last_ts"),
+        "requests": total_requests,
+        "sidechain_requests": wm.get("sidechain_requests", 0) or 0,
+        "sidechain_cost": round(sidechain_cost, 4),
+        "user_prompts": wm.get("user_prompts", 0) or 0,
+        "tokens": tokens,
+        "cost": {k: round(v, 4) for k, v in cost_totals.items()},
+        "cost_total": round(cost_totals["cost_total"], 4),
+        "model_mix": {k: {**v, "cost": round(v["cost"], 4)} for k, v in model_mix.items()},
+        "unknown_models": sorted(unknown_models),
+        "ttl_dominant": wm.get("ttl_dominant", "1h"),
+        "gap_events": gap_events,
+        "wasted_usd": round(wasted_usd_total, 4),
+        "repeat_reads": repeat_reads,
+        "large_tool_results": large_tool_results,
+        "context": context,
+        "flags": flags,
+        "source": "wiki",
+        "wiki_page": page_rel,
+    }
+
+
 def find_session_files(claude_dir: Path):
     projects_dir = claude_dir / "projects"
     if not projects_dir.is_dir():
@@ -501,11 +745,36 @@ def scan_command(args):
     skipped_since = 0
     files_seen = 0
 
+    wiki_dir = resolve_wiki_dir(args)
+    wiki_pages = collect_wiki_fingerprints(wiki_dir, warnings) if wiki_dir else {}
+    this_machine = platform.node()
+
     for project_name, jsonl_path in find_session_files(claude_dir):
         if project_filters and not any(pf in project_name.lower() for pf in project_filters):
             continue
         files_seen += 1
-        result = process_session_file(jsonl_path, project_name, args, pricing, warnings)
+
+        # Fully-indexed wiki page (same machine, matching mtime+size fingerprint
+        # across main + subagent files) -> build the record from the wiki's
+        # pricing-free metrics instead of re-parsing the JSONL.
+        result = None
+        fp = wiki_pages.get(jsonl_path.stem)
+        if fp is not None and fp["machine"] == this_machine:
+            mtime_epoch, size = session_source_stat(jsonl_path)
+            if fp["source_mtime_epoch"] == mtime_epoch and fp["source_size"] == size:
+                wm = read_page_metrics_block(fp["abs_page"], warnings)
+                if wm is not None:
+                    result = session_record_from_wiki(wm, project_name, jsonl_path,
+                                                      fp["page"], pricing, args)
+                if result is None:
+                    warnings.append(f"{fp['abs_page']}: fingerprint matched but metrics "
+                                    "block unusable; parsed JSONL instead")
+
+        if result is None:
+            result = process_session_file(jsonl_path, project_name, args, pricing, warnings)
+            if isinstance(result, dict):
+                result["source"] = "jsonl"
+
         if result == "empty":
             skipped_empty += 1
             continue
@@ -558,11 +827,16 @@ def scan_command(args):
         out_dir = claude_dir / "session-retro" / "runs" / run_stamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    sessions_from_wiki = sum(1 for s in sessions if s.get("source") == "wiki")
+
     metrics = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "claude_dir": str(claude_dir),
         "filters": {"project": args.project, "since": args.since},
         "pricing": pricing,
+        "wiki_dir": str(wiki_dir) if wiki_dir else None,
+        "sessions_from_wiki": sessions_from_wiki,
+        "sessions_from_jsonl": len(sessions) - sessions_from_wiki,
         "files_seen": files_seen,
         "sessions_included": len(sessions),
         "sessions_skipped_empty": skipped_empty,
@@ -625,6 +899,12 @@ def write_summary(path: Path, metrics: dict, args):
         f"skipped before --since: {metrics['sessions_skipped_before_since']})"
     )
     lines.append(f"- Requests (deduped, non-synthetic): {t['requests']}")
+    if metrics.get("wiki_dir"):
+        lines.append(
+            f"- Data provenance: {metrics['sessions_from_wiki']} session(s) from the sessions wiki "
+            f"(fully indexed; costs priced from wiki token counts at current rates), "
+            f"{metrics['sessions_from_jsonl']} parsed from JSONL (wiki: `{metrics['wiki_dir']}`)"
+        )
     lines.append(f"- **Total counterfactual cost: ${t['cost_total']:.2f}**")
     cb = t["cost_breakdown"]
     lines.append(
@@ -825,6 +1105,8 @@ def build_arg_parser():
     scan_p.add_argument("--top", type=int, default=10, help="Number of top sessions by cost to include in summary.md (default: 10)")
     scan_p.add_argument("--sonnet5-intro", action="store_true", help="Price Sonnet 5 at the intro rate ($2/$10 per MTok) instead of standard ($3/$15)")
     scan_p.add_argument("--pricing-file", help="Path to a JSON file overriding entries in the default pricing table")
+    scan_p.add_argument("--wiki-dir", help="Sessions-wiki folder; fully-indexed sessions are read from wiki metrics instead of JSONL (default: default_wiki_dir from <claude-dir>/sessions-wiki/config.json)")
+    scan_p.add_argument("--no-wiki", action="store_true", help="Ignore any sessions wiki; always parse JSONL sources")
     scan_p.set_defaults(func=scan_command)
 
     extract_p = sub.add_parser("extract", help="Print a condensed transcript of one session JSONL file")

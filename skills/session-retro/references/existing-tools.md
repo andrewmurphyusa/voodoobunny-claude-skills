@@ -10,6 +10,7 @@ There is a hard constraint on this skill: **do not re-derive analysis that popul
 - **`/fewer-permission-prompts`** — scans transcripts for common read-only Bash/MCP calls and proposes an allowlist. This skill does not produce permission-allowlist recommendations — that's this command's job.
 - **`/cost` and `/usage`** (Claude Code built-ins) — session/window-level cost and usage display. This skill does not replace the at-a-glance built-in displays.
 - **sniffly** and **claude-code-templates dashboards** — third-party visualization/dashboard tools over Claude Code session data (charts, live dashboards). This skill does not produce a dashboard or visualization layer; its output is a written report.
+- **sessions wiki** (`build-sessions-wiki` / `search-sessions-wiki` skills, sibling skills in this repo) — the durable per-session knowledge layer: LLM-written summaries and outcomes, verbatim prompts, tags/cross-references, and **pricing-free** token metrics per session. This skill is a *consumer* of the wiki, not a competitor: `scan` reads wiki metrics for fully-indexed sessions instead of re-parsing JSONL, and workflows read wiki pages instead of re-extracting transcripts. Do not re-summarize a session whose wiki page already summarizes it — cite/quote the page. The division of labor: the wiki owns durable facts and token counts; session-retro owns pricing, counterfactuals, and judgment.
 
 ## The rule
 

@@ -8,9 +8,9 @@ This workflow answers exactly one question: **how could the user work better wit
 
 **Explicit exclusion:** do NOT re-derive or restate what `rtk discover` already finds (missed RTK-prefixed command opportunities) or what `/fewer-permission-prompts` already finds (recurring permission prompts that could be pre-allowlisted). If a candidate observation is really "the user could have used `rtk <cmd>` here" or "this permission prompt recurs," drop it — those tools own that territory.
 
-1. **Run the scan** (if not already run this session): `python scripts/parse_sessions.py scan`. Read `summary.md` for the session list and pick a spread across projects and time, not just the most expensive sessions — habits show up in ordinary sessions as much as expensive ones. Include at least a few of the largest-by-turn-count sessions (`MANY_TURNS` flag) since long back-and-forths are rich in habit signal.
+1. **Run the scan** (if not already run this session): `python scripts/parse_sessions.py scan` (the configured sessions wiki is used automatically when present; `--wiki-dir`/`--no-wiki` override). Read `summary.md` for the session list and pick a spread across projects and time, not just the most expensive sessions — habits show up in ordinary sessions as much as expensive ones. Include at least a few of the largest-by-turn-count sessions (`MANY_TURNS` flag) since long back-and-forths are rich in habit signal.
 
-2. **Extract and read each selected session:** `python scripts/parse_sessions.py extract <session.jsonl>`. Read across multiple sessions before drawing any pattern — a single occurrence is an anecdote, not a habit.
+2. **Read each selected session.** For `"source": "wiki"` records, the wiki page is unusually well-suited to habit mining — `## Prompts` holds every user prompt verbatim (repeated instructions and corrections live there) and `## Outcome` records abandoned/restarted work — so read the page first and use `extract` only when turn-by-turn flow matters (e.g. distinguishing a genuine clarification from a correction). For `"source": "jsonl"` records, run `python scripts/parse_sessions.py extract <session.jsonl>`. Read across multiple sessions before drawing any pattern — a single occurrence is an anecdote, not a habit.
 
 3. **Mine for these specific patterns across sessions:**
    - **Repeated instructions** — the same guidance, preference, or constraint given by the user in multiple sessions (e.g. restating a coding convention, a file-naming rule, a "always do X" instruction). Each repetition is evidence the instruction isn't durably captured anywhere. Recommend a specific destination: a `CLAUDE.md` addition (if it's a standing preference) or a new/extended skill (if it's a repeated multi-step task).
@@ -27,7 +27,7 @@ This workflow answers exactly one question: **how could the user work better wit
 <success_criteria>
 - No token-count or dollar-cost math appears in this workflow's output — it is purely semantic/behavioral.
 - No finding duplicates `rtk discover` or `/fewer-permission-prompts` territory.
-- Sessions were read via `extract`, never a raw `.jsonl` read.
+- Sessions were read via their wiki page or `extract`, never a raw `.jsonl` read.
 - Multiple sessions were sampled, not just the single most expensive one — habits require cross-session evidence.
 - Each of the five pattern categories (repeated instructions, corrections, clarification round-trips, abandoned/restarted work, model-mix opportunities) was explicitly considered.
 - Every finding cites session id(s), timestamp/request index, and evidence; single-occurrence observations are labeled as such.
