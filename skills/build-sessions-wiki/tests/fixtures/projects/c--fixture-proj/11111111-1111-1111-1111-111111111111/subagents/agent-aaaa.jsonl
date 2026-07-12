@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-01-01T00:59:59Z","sessionId":"11111111-1111-1111-1111-111111111111","isSidechain":true,"message":{"role":"user","content":"Task: investigate the thing (synthesized subagent prompt, not human)"}}
+{"type":"assistant","timestamp":"2026-01-01T01:00:00Z","sessionId":"11111111-1111-1111-1111-111111111111","isSidechain":true,"requestId":"r3","uuid":"u3","message":{"id":"m3","model":"claude-fable-5","content":[{"type":"text","text":"subagent work"}],"usage":{"input_tokens":7,"output_tokens":3}}}

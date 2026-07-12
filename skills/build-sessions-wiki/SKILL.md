@@ -75,7 +75,7 @@ python scripts/wiki_tools.py config set --key staleness_hours --value 24
 </process>
 
 <script_index>
-All deterministic work runs through `scripts/wiki_tools.py` (Python 3, stdlib only; invoke with plain `python` — RTK has no filter for this output shape):
+All deterministic work runs through `scripts/wiki_tools.py` (Python 3, stdlib only; invoke with plain `python` — RTK has no filter for this output shape). Run `python scripts/wiki_tools.py help` for full example-driven usage of every command, or `help <command>` (e.g. `help plan`) for one:
 
 - `config get|set` — shared config (`default_wiki_dir`, `staleness_hours`).
 - `status [--wiki-dir DIR]` — last_refreshed + staleness verdict.
@@ -90,3 +90,13 @@ All deterministic work runs through `scripts/wiki_tools.py` (Python 3, stdlib on
 - `references/wiki-format.md` — the full wiki format contract: layout, frontmatter keys, fully-indexed fingerprint, body sections, multi-machine rules, tagging conventions. Required reading before writing pages.
 - `templates/session-page.md` — the page template to instantiate per session.
 </reference_index>
+
+<testing>
+`scripts/wiki_tools.py` is factored so the deterministic logic (parsing, token math, classification, index/tag rendering) lives in compute-only functions that return data; the `*_command` wrappers just print. Tests target those functions against a committed synthetic fixture — no dependency on live `~/.claude` data. Run:
+
+```
+python -m unittest discover -s skills/build-sessions-wiki/tests -p "test_*.py"
+```
+
+`tests/test_contract.py` is a cross-skill guard: it feeds one fixture through both this skill's `wiki_tools.py` and session-retro's `parse_sessions.py` and asserts they still agree on token buckets and the source fingerprint. Run it after changing parsing/fingerprint logic in **either** script — the two carry duplicate copies by design (to stay self-contained), and this test catches drift. See `tests/README.md`.
+</testing>
