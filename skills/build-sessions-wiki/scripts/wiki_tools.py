@@ -36,195 +36,31 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Windows console encoding guard
-# ---------------------------------------------------------------------------
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
-FILE_ENCODING_KWARGS = {"encoding": "utf-8", "errors": "replace"}
-
-FORMAT_VERSION = 1
-
-# Analysis thresholds (token-based; mirrors session-retro's parse_sessions.py
-# except that the gap-rewrite flag is expressed in tokens, not dollars,
-# because this script is pricing-free).
-GAP_CREATION_TOKEN_THRESHOLD = 4096
-GAP_THRESHOLD_1H_DOMINANT = 3600  # seconds
-GAP_THRESHOLD_5M_DOMINANT = 300   # seconds
-GAP_FLAG_CREATION_TOKENS = 50_000
-LARGE_TOOL_RESULT_TOKENS = 10_000
-LONG_CONTEXT_TOKENS = 150_000
-MANY_TURNS_THRESHOLD = 150
-
-DEFAULT_CONFIG = {"default_wiki_dir": None, "staleness_hours": 6}
-
-TOKEN_KEYS = (
-    "input_tokens",
-    "cache_read_tokens",
-    "cache_write_5m_tokens",
-    "cache_write_1h_tokens",
-    "output_tokens",
+# Shared, pricing-free core (parsing, dedup, token math, fingerprint, metrics,
+# gap detection, transcript rendering). session_core.py lives beside this file.
+from session_core import (  # noqa: E402
+    FILE_ENCODING_KWARGS,
+    FORMAT_VERSION,
+    compute_session_metrics,
+    find_session_files,
+    parse_frontmatter,
+    parse_ts,
+    read_jsonl_file,
+    read_session_records,
+    render_extract,
+    render_prompts_markdown,
+    collect_prompts_from_records,
+    session_source_stat,
+    utc_now_iso,
 )
 
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def parse_ts(ts: str | None):
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def iter_jsonl(path: Path, warnings: list):
-    try:
-        with open(path, **FILE_ENCODING_KWARGS) as f:
-            for lineno, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except Exception as e:
-                    warnings.append(f"{path}:{lineno}: malformed JSON ({e})")
-    except Exception as e:
-        warnings.append(f"{path}: could not read file ({e})")
-
-
-def resolve_model_key(model_name: str | None) -> tuple[str, bool]:
-    """Substring-match a raw model string to a canonical key.
-    Returns (key, is_unknown). Unknown models map to 'opus' and are flagged."""
-    if not model_name:
-        return "opus", True
-    m = model_name.lower()
-    if "fable" in m or "mythos" in m:
-        return "fable", False
-    if "opus" in m:
-        return "opus", False
-    if "sonnet" in m:
-        return "sonnet5", False
-    if "haiku" in m:
-        return "haiku", False
-    return "opus", True
-
-
-def usage_token_buckets(usage: dict) -> dict:
-    """Extract the five token buckets from a usage dict (pricing-free)."""
-    cache_creation = usage.get("cache_creation") or {}
-    w5 = cache_creation.get("ephemeral_5m_input_tokens", 0) or 0
-    w1h = cache_creation.get("ephemeral_1h_input_tokens", 0) or 0
-    total_creation = usage.get("cache_creation_input_tokens", 0) or 0
-    # Verified corpora are 1h-TTL-dominant: if only the total is present,
-    # attribute it to the 1h bucket rather than dropping it.
-    if not cache_creation and total_creation:
-        w1h = total_creation
-    return {
-        "input_tokens": usage.get("input_tokens", 0) or 0,
-        "cache_read_tokens": usage.get("cache_read_input_tokens", 0) or 0,
-        "cache_write_5m_tokens": w5,
-        "cache_write_1h_tokens": w1h,
-        "output_tokens": usage.get("output_tokens", 0) or 0,
-    }
-
-
-def dedupe_assistant_records(raw_assistant_records: list) -> list:
-    """Dedupe by (message.id, requestId), keep the LAST occurrence, sort by
-    timestamp ascending. Same rule as session-retro's parser."""
-    latest_by_key = {}
-    fallback_seq = 0
-    for rec in raw_assistant_records:
-        msg = rec.get("message") or {}
-        msg_id = msg.get("id")
-        request_id = rec.get("requestId")
-        if msg_id is None or request_id is None:
-            fallback_seq += 1
-            key = ("__no_id__", fallback_seq)
-        else:
-            key = (msg_id, request_id)
-        latest_by_key[key] = rec
-    records = list(latest_by_key.values())
-    records.sort(key=lambda r: parse_ts(r.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc))
-    return records
-
-
-def extract_user_content_blocks(message: dict):
-    content = message.get("content")
-    if isinstance(content, str):
-        return content, []
-    if isinstance(content, list):
-        text_parts = []
-        tool_result_blocks = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = block.get("type")
-            if btype == "tool_result":
-                tool_result_blocks.append(block)
-            elif btype == "text":
-                text_parts.append(block.get("text", ""))
-        return "\n".join(text_parts), tool_result_blocks
-    return "", []
-
-
-def find_subagent_files(session_path: Path):
-    """Subagent (sidechain) transcripts live in
-    <project-dir>/<session-id>/subagents/agent-*.jsonl -- NOT inline.
-    Missing them silently drops sidechain activity."""
-    subagents_dir = session_path.parent / session_path.stem / "subagents"
-    if not subagents_dir.is_dir():
-        return []
-    return sorted(subagents_dir.glob("*.jsonl"))
-
-
-def session_source_stat(session_path: Path) -> tuple[int, int, list]:
-    """Combined (max mtime epoch-seconds, total size bytes, subagent files)
-    across the main JSONL and any subagent transcripts. This pair is the
-    'fully indexed' fingerprint stored in each wiki page."""
-    subs = find_subagent_files(session_path)
-    files = [session_path] + subs
-    mtime = 0
-    size = 0
-    for f in files:
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        mtime = max(mtime, int(st.st_mtime))
-        size += st.st_size
-    return mtime, size, subs
-
-
-def find_session_files(claude_dir: Path):
-    projects_dir = claude_dir / "projects"
-    if not projects_dir.is_dir():
-        return
-    for project_dir in sorted(projects_dir.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        for jsonl_path in sorted(project_dir.glob("*.jsonl")):
-            yield project_dir.name, jsonl_path
-
-
-def truncate(text: str, limit: int) -> str:
-    text = text or ""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"... [truncated, {len(text)} chars total]"
+DEFAULT_CONFIG = {"default_wiki_dir": None, "staleness_hours": 6}
 
 
 # ---------------------------------------------------------------------------
@@ -294,28 +130,8 @@ def config_command(args):
 
 
 # ---------------------------------------------------------------------------
-# wiki page frontmatter + meta
+# wiki page frontmatter + meta  (parse_frontmatter comes from session_core)
 # ---------------------------------------------------------------------------
-
-def parse_frontmatter(path: Path) -> dict | None:
-    """Parse a flat 'key: value' frontmatter block delimited by --- lines.
-    Returns None if the file has no frontmatter."""
-    try:
-        with open(path, **FILE_ENCODING_KWARGS) as f:
-            first = f.readline()
-            if first.strip() != "---":
-                return None
-            fm = {}
-            for line in f:
-                if line.strip() == "---":
-                    return fm
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    fm[k.strip()] = v.strip()
-            return None  # unterminated frontmatter
-    except Exception:
-        return None
-
 
 def collect_wiki_pages(wiki_dir: Path) -> dict:
     """Map session_id -> {page metadata} for every sessions/**/*.md page."""
@@ -537,249 +353,9 @@ def plan_command(args):
 
 
 # ---------------------------------------------------------------------------
-# metrics
+# metrics / prompts / extract  (compute + rendering live in session_core;
+# these wrappers just handle argv, file existence, and printing)
 # ---------------------------------------------------------------------------
-
-def new_model_bucket():
-    return {"requests": 0, **{k: 0 for k in TOKEN_KEYS}}
-
-
-def compute_session_metrics(path: Path) -> tuple[dict, list]:
-    """Parse one session (main + subagent files) into the pricing-free metrics
-    dict. Returns (metrics, warnings); no printing. The empty-session case
-    returns a dict with "empty": True. This is the function tests target."""
-    warnings: list = []
-    raw_assistant = []
-    user_records = []
-    ai_titles = []
-    summaries = []
-
-    files_to_read = [path] + find_subagent_files(path)
-    for src in files_to_read:
-        for obj in iter_jsonl(src, warnings):
-            rtype = obj.get("type")
-            if rtype == "assistant":
-                raw_assistant.append(obj)
-            elif rtype == "user":
-                user_records.append(obj)
-            elif rtype == "ai-title":
-                t = obj.get("title") or obj.get("text") or obj.get("content")
-                if isinstance(t, str) and t.strip():
-                    ai_titles.append(t.strip())
-            elif rtype == "summary":
-                s = obj.get("summary")
-                if isinstance(s, str) and s.strip():
-                    summaries.append(s.strip())
-
-    assistant_records = dedupe_assistant_records(raw_assistant)
-
-    session_id = path.stem
-    cwd = None
-    git_branch = None
-    cc_version = None
-
-    tokens_totals = {k: 0 for k in TOKEN_KEYS}
-    model_mix_main = defaultdict(new_model_bucket)
-    model_mix_sidechain = defaultdict(new_model_bucket)
-    unknown_models = set()
-
-    main_chain_requests = []
-    main_chain_contexts = []
-    sidechain_requests = 0
-    total_requests = 0
-
-    tool_use_id_to_name = {}
-    read_file_counts = defaultdict(int)
-    tool_use_counts = defaultdict(int)
-
-    first_ts = None
-    last_ts = None
-
-    for rec in assistant_records:
-        msg = rec.get("message") or {}
-        model = msg.get("model")
-        if model == "<synthetic>":
-            continue
-        usage = msg.get("usage")
-        if not usage:
-            continue
-
-        session_id = rec.get("sessionId") or session_id
-        if not rec.get("isSidechain"):
-            cwd = cwd or rec.get("cwd")
-            git_branch = git_branch or rec.get("gitBranch")
-            cc_version = cc_version or rec.get("version")
-
-        ts = parse_ts(rec.get("timestamp"))
-        if ts is not None:
-            if first_ts is None or ts < first_ts:
-                first_ts = ts
-            if last_ts is None or ts > last_ts:
-                last_ts = ts
-
-        model_key, is_unknown = resolve_model_key(model)
-        if is_unknown:
-            unknown_models.add(model or "<missing>")
-
-        buckets = usage_token_buckets(usage)
-        total_requests += 1
-        for k in TOKEN_KEYS:
-            tokens_totals[k] += buckets[k]
-
-        is_sidechain = bool(rec.get("isSidechain"))
-        mix = model_mix_sidechain if is_sidechain else model_mix_main
-        mm = mix[model_key]
-        mm["requests"] += 1
-        for k in TOKEN_KEYS:
-            mm[k] += buckets[k]
-
-        if is_sidechain:
-            sidechain_requests += 1
-        else:
-            context_tokens = (buckets["input_tokens"] + buckets["cache_read_tokens"]
-                              + buckets["cache_write_5m_tokens"] + buckets["cache_write_1h_tokens"])
-            main_chain_requests.append({"ts": ts, "buckets": buckets, "model_key": model_key})
-            main_chain_contexts.append(context_tokens)
-
-        for block in msg.get("content") or []:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            tool_use_id_to_name[block.get("id")] = block.get("name")
-            tool_use_counts[block.get("name") or "unknown"] += 1
-            if block.get("name") == "Read":
-                fp = (block.get("input") or {}).get("file_path")
-                if fp:
-                    read_file_counts[fp] += 1
-
-    if total_requests == 0:
-        return {
-            "wiki_tools_version": FORMAT_VERSION,
-            "generated_at": utc_now_iso(),
-            "session_id": session_id,
-            "path": str(path),
-            "empty": True,
-            "warnings": warnings,
-        }, warnings
-
-    # --- Gap-rewrite detection (main chain only, TTL-aware, token-based) ---
-    ttl_dominant = ("1h" if tokens_totals["cache_write_1h_tokens"] >= tokens_totals["cache_write_5m_tokens"]
-                    else "5m")
-    gap_threshold = GAP_THRESHOLD_1H_DOMINANT if ttl_dominant == "1h" else GAP_THRESHOLD_5M_DOMINANT
-
-    gap_events = []
-    gap_creation_tokens_total = 0
-    prev_ts = None
-    for i, item in enumerate(main_chain_requests):
-        ts = item["ts"]
-        b = item["buckets"]
-        if i == 0 or ts is None or prev_ts is None:
-            prev_ts = ts
-            continue
-        gap_seconds = (ts - prev_ts).total_seconds()
-        creation_tokens = b["cache_write_5m_tokens"] + b["cache_write_1h_tokens"]
-        if creation_tokens > GAP_CREATION_TOKEN_THRESHOLD and gap_seconds > gap_threshold:
-            gap_creation_tokens_total += creation_tokens
-            gap_events.append({
-                "timestamp": ts.isoformat(),
-                "gap_seconds": round(gap_seconds, 1),
-                "creation_tokens": creation_tokens,
-                "cache_write_5m_tokens": b["cache_write_5m_tokens"],
-                "cache_write_1h_tokens": b["cache_write_1h_tokens"],
-                "model_key": item["model_key"],
-            })
-        prev_ts = ts
-
-    # --- Large tool results (top 5, estimated tokens) ---
-    large_tool_results = []
-    for urec in user_records:
-        msg = urec.get("message") or {}
-        _, tool_result_blocks = extract_user_content_blocks(msg)
-        for block in tool_result_blocks:
-            try:
-                est_tokens = len(json.dumps(block)) // 4
-            except Exception:
-                continue
-            tool_name = tool_use_id_to_name.get(block.get("tool_use_id"), "unknown")
-            large_tool_results.append({
-                "tool_use_id": block.get("tool_use_id"),
-                "tool_name": tool_name,
-                "est_tokens": est_tokens,
-            })
-    large_tool_results.sort(key=lambda x: x["est_tokens"], reverse=True)
-    large_tool_results = large_tool_results[:5]
-
-    # --- User prompt count (human prompts only) ---
-    user_prompt_count = 0
-    for urec in user_records:
-        if urec.get("isMeta") or urec.get("isSidechain"):
-            continue
-        msg = urec.get("message") or {}
-        text, tool_result_blocks = extract_user_content_blocks(msg)
-        if tool_result_blocks:
-            continue
-        if text and text.strip():
-            user_prompt_count += 1
-
-    context_first = main_chain_contexts[0] if main_chain_contexts else 0
-    context_max = max(main_chain_contexts) if main_chain_contexts else 0
-    context_last = main_chain_contexts[-1] if main_chain_contexts else 0
-
-    repeat_reads = {fp: n for fp, n in read_file_counts.items() if n >= 2}
-
-    flags = []
-    if gap_creation_tokens_total > GAP_FLAG_CREATION_TOKENS:
-        flags.append("GAP_REWRITES")
-    files_ge2 = [n for n in read_file_counts.values() if n >= 2]
-    files_ge3 = [n for n in read_file_counts.values() if n >= 3]
-    if files_ge3 or len(files_ge2) >= 5:
-        flags.append("REPEAT_READS")
-    if any(r["est_tokens"] >= LARGE_TOOL_RESULT_TOKENS for r in large_tool_results):
-        flags.append("LARGE_TOOL_RESULTS")
-    if context_last > LONG_CONTEXT_TOKENS:
-        flags.append("LONG_CONTEXT")
-    if total_requests > MANY_TURNS_THRESHOLD:
-        flags.append("MANY_TURNS")
-    if unknown_models:
-        flags.append("UNKNOWN_MODEL")
-
-    mtime_epoch, size, subs = session_source_stat(path)
-
-    metrics = {
-        "wiki_tools_version": FORMAT_VERSION,
-        "generated_at": utc_now_iso(),
-        "machine": platform.node(),
-        "session_id": session_id,
-        "project": path.parent.name,
-        "path": str(path),
-        "subagent_files": [str(s) for s in subs],
-        "source_mtime_epoch": mtime_epoch,
-        "source_size": size,
-        "cwd": cwd,
-        "git_branch": git_branch,
-        "claude_code_version": cc_version,
-        "ai_titles": ai_titles,
-        "builtin_summaries": summaries,
-        "first_ts": first_ts.isoformat() if first_ts else None,
-        "last_ts": last_ts.isoformat() if last_ts else None,
-        "requests": total_requests,
-        "sidechain_requests": sidechain_requests,
-        "user_prompts": user_prompt_count,
-        "tokens": tokens_totals,
-        "model_mix_main": {k: dict(v) for k, v in model_mix_main.items()},
-        "model_mix_sidechain": {k: dict(v) for k, v in model_mix_sidechain.items()},
-        "unknown_models": sorted(unknown_models),
-        "ttl_dominant": ttl_dominant,
-        "gap_events": gap_events,
-        "gap_creation_tokens_total": gap_creation_tokens_total,
-        "repeat_reads": repeat_reads,
-        "large_tool_results": large_tool_results,
-        "context": {"first": context_first, "max": context_max, "last": context_last},
-        "tool_use_counts": dict(sorted(tool_use_counts.items(), key=lambda kv: -kv[1])),
-        "flags": flags,
-        "warnings_count": len(warnings),
-    }
-    return metrics, warnings
-
 
 def metrics_command(args):
     path = Path(args.session_file).expanduser()
@@ -792,132 +368,27 @@ def metrics_command(args):
         print(f"# {len(warnings)} parse warning(s) (malformed lines skipped)", file=sys.stderr)
 
 
-# ---------------------------------------------------------------------------
-# prompts
-# ---------------------------------------------------------------------------
-
 def prompts_command(args):
     path = Path(args.session_file).expanduser()
     if not path.is_file():
         print(f"ERROR: file not found: {path}", file=sys.stderr)
         sys.exit(2)
-
-    warnings: list = []
-    prompts = []
-    for obj in iter_jsonl(path, warnings):
-        if obj.get("type") != "user":
-            continue
-        if obj.get("isMeta") or obj.get("isSidechain"):
-            continue
-        msg = obj.get("message") or {}
-        text, tool_result_blocks = extract_user_content_blocks(msg)
-        if tool_result_blocks:
-            continue
-        if text and text.strip():
-            prompts.append((obj.get("timestamp", ""), text.strip()))
-
-    print(f"## Prompts (verbatim, {len(prompts)} total)")
-    print("")
-    for i, (ts, text) in enumerate(prompts, 1):
-        print(f"### Prompt {i} [{ts}]")
-        print("")
-        print(truncate(text, args.max_chars))
-        print("")
+    records, warnings = read_jsonl_file(path)
+    prompts = collect_prompts_from_records(records)
+    print(render_prompts_markdown(prompts, args.max_chars))
     if warnings:
         print(f"# {len(warnings)} parse warning(s)", file=sys.stderr)
 
-
-# ---------------------------------------------------------------------------
-# extract
-# ---------------------------------------------------------------------------
 
 def extract_command(args):
     path = Path(args.session_file).expanduser()
     if not path.is_file():
         print(f"ERROR: file not found: {path}", file=sys.stderr)
         sys.exit(2)
-
-    warnings: list = []
-
-    # First pass: for each (message.id, requestId), which uuid is retained.
-    retained_uuid_by_key = {}
-    for obj in iter_jsonl(path, warnings):
-        if obj.get("type") != "assistant":
-            continue
-        msg = obj.get("message") or {}
-        key = (msg.get("id"), obj.get("requestId"))
-        retained_uuid_by_key[key] = obj.get("uuid")
-
-    USER_PROMPT_MAX = 1500
-
-    print(f"# Condensed transcript: {path.name}")
-    print(f"# session file: {path}")
-    subagent_files = find_subagent_files(path)
-    if subagent_files:
-        print(f"# NOTE: this session has {len(subagent_files)} subagent transcript(s) not shown here."
-              " Extract them individually if needed:")
-        for sf in subagent_files:
-            print(f"#   {sf}")
-    print("")
-
-    for obj in iter_jsonl(path, warnings):
-        rtype = obj.get("type")
-        ts = obj.get("timestamp", "")
-
-        if rtype == "user":
-            if obj.get("isMeta"):
-                continue
-            msg = obj.get("message") or {}
-            text, tool_result_blocks = extract_user_content_blocks(msg)
-            if text and text.strip() and not tool_result_blocks:
-                print(f"[{ts}] USER: {truncate(text.strip(), USER_PROMPT_MAX)}")
-                print("")
-            for block in tool_result_blocks:
-                content = block.get("content")
-                preview = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-                try:
-                    est_tokens = len(json.dumps(block)) // 4
-                except Exception:
-                    est_tokens = 0
-                err_flag = " ERROR" if block.get("is_error") else ""
-                print(f"  TOOL_RESULT [~{est_tokens} tok{err_flag}]: {truncate(preview or '', args.max_tool)}")
-            continue
-
-        if rtype != "assistant":
-            continue
-
-        msg = obj.get("message") or {}
-        model = msg.get("model")
-        if model == "<synthetic>":
-            continue
-        key = (msg.get("id"), obj.get("requestId"))
-        if retained_uuid_by_key.get(key) != obj.get("uuid"):
-            continue  # superseded duplicate
-
-        content = msg.get("content") or []
-        text_parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-        text = "\n".join(t for t in text_parts if t)
-        if text.strip():
-            print(f"[{ts}] ASSISTANT (model={model}): {truncate(text.strip(), args.max_text)}")
-
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            try:
-                input_str = json.dumps(block.get("input", {}), ensure_ascii=False)
-            except Exception:
-                input_str = str(block.get("input"))
-            print(f"  TOOL_USE {block.get('name')}: {truncate(input_str, args.max_tool)}")
-
-        usage = msg.get("usage")
-        if usage:
-            b = usage_token_buckets(usage)
-            sidechain_flag = " [sidechain]" if obj.get("isSidechain") else ""
-            print(f"  USAGE: in={b['input_tokens']} cache_read={b['cache_read_tokens']} "
-                  f"cache_write(5m={b['cache_write_5m_tokens']},1h={b['cache_write_1h_tokens']}) "
-                  f"out={b['output_tokens']}{sidechain_flag}")
-        print("")
-
+    records, warnings = read_jsonl_file(path)
+    subagent_files = session_source_stat(path)[2]
+    print(render_extract(records, path.name, str(path), subagent_files,
+                         max_text=args.max_text, max_tool=args.max_tool))
     if warnings:
         print(f"# {len(warnings)} warning(s) during parse:", file=sys.stderr)
         for w in warnings:

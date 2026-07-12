@@ -29,30 +29,9 @@ EMPTY_SESSION = FIXTURE_PROJ / "22222222-2222-2222-2222-222222222222.jsonl"
 
 
 class TestPureHelpers(unittest.TestCase):
-    def test_resolve_model_key(self):
-        self.assertEqual(wiki_tools.resolve_model_key("claude-fable-5"), ("fable", False))
-        self.assertEqual(wiki_tools.resolve_model_key("claude-mythos-5"), ("fable", False))
-        self.assertEqual(wiki_tools.resolve_model_key("claude-opus-4-8"), ("opus", False))
-        self.assertEqual(wiki_tools.resolve_model_key("claude-sonnet-5"), ("sonnet5", False))
-        self.assertEqual(wiki_tools.resolve_model_key("claude-haiku-4-5"), ("haiku", False))
-        self.assertEqual(wiki_tools.resolve_model_key("some-future-model"), ("opus", True))
-        self.assertEqual(wiki_tools.resolve_model_key(None), ("opus", True))
-
-    def test_usage_token_buckets_ttl_breakdown(self):
-        b = wiki_tools.usage_token_buckets({
-            "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 5,
-            "cache_creation": {"ephemeral_5m_input_tokens": 3, "ephemeral_1h_input_tokens": 7},
-        })
-        self.assertEqual(b["input_tokens"], 100)
-        self.assertEqual(b["cache_read_tokens"], 5)
-        self.assertEqual(b["cache_write_5m_tokens"], 3)
-        self.assertEqual(b["cache_write_1h_tokens"], 7)
-
-    def test_usage_token_buckets_1h_fallback(self):
-        # No breakdown present but a total is -> attribute the total to 1h.
-        b = wiki_tools.usage_token_buckets({"cache_creation_input_tokens": 500})
-        self.assertEqual(b["cache_write_1h_tokens"], 500)
-        self.assertEqual(b["cache_write_5m_tokens"], 0)
+    # NOTE: parsing primitives (resolve_model_key, usage_token_buckets,
+    # dedupe_assistant_records) now live in session_core -- see
+    # test_session_core.py. This class covers wiki_tools' own helpers.
 
     def test_coerce_config_value(self):
         self.assertEqual(wiki_tools.coerce_config_value("24"), 24)
@@ -61,15 +40,6 @@ class TestPureHelpers(unittest.TestCase):
         self.assertIsNone(wiki_tools.coerce_config_value("null"))
         self.assertIsNone(wiki_tools.coerce_config_value(""))
         self.assertEqual(wiki_tools.coerce_config_value("D:\\wiki"), "D:\\wiki")
-
-    def test_dedupe_keeps_last_occurrence(self):
-        recs = [
-            {"message": {"id": "m1"}, "requestId": "r1", "timestamp": "2026-01-01T00:00:00Z", "tag": "first"},
-            {"message": {"id": "m1"}, "requestId": "r1", "timestamp": "2026-01-01T00:00:00Z", "tag": "last"},
-        ]
-        out = wiki_tools.dedupe_assistant_records(recs)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["tag"], "last")
 
     def test_classify_session_status(self):
         page = {"machine": "HOST", "source_mtime_epoch": 100, "source_size": 50}

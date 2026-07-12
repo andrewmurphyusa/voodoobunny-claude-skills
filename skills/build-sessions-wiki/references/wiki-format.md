@@ -57,6 +57,8 @@ git_branch: <branch, or empty>
 
 **The fully-indexed fingerprint.** `machine` + `source_mtime_epoch` + `source_size` is how `plan` decides a page is current: if all three match the live file set (main JSONL + subagent transcripts), status is `unchanged` and the page is considered **fully indexed** — downstream skills (including session-retro) may trust it instead of re-reading the raw JSONL. Any mismatch → `changed` → the page must be rebuilt.
 
+The fingerprint and the `## Metrics` block are both produced by `scripts/session_core.py`, the single shared parser that `wiki_tools.py` and session-retro's `parse_sessions.py` both import. There is no second implementation to keep in sync — change parsing/fingerprint behavior in `session_core.py` only, and `tests/test_contract.py` guards the coupling.
+
 ## Session page body sections (in order)
 
 1. `## Summary` — LLM-written work summary: what was asked, what was done, key decisions, files touched.

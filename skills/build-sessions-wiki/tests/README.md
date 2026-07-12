@@ -16,17 +16,25 @@ Or from this directory: `python -m unittest`.
 
 ## What's covered
 
-- `test_wiki_tools.py` — unit tests for `wiki_tools.py`. Targets the pure /
-  compute-only functions the refactor exposed (`resolve_model_key`,
-  `usage_token_buckets`, `dedupe_assistant_records`, `coerce_config_value`,
-  `classify_session_status`, `compute_staleness`, `resolve_from_time`,
-  `compute_session_metrics`, `build_plan`, `render_index`/`render_tags`,
-  `config_set`) so tests assert on returned data instead of parsing stdout.
-- `test_contract.py` — cross-script contract test. Feeds the same fixture
-  through `wiki_tools.compute_session_metrics` and session-retro's
-  `parse_sessions.process_session_file` and asserts they agree on token buckets,
-  counts, per-model sums, the source fingerprint, and model-key resolution.
-  **This is the guard against the two skills' duplicated parsing logic drifting.**
+- `test_session_core.py` — the shared parser (`scripts/session_core.py`).
+  Covers the primitives (`resolve_model_key`, `usage_token_buckets`,
+  `dedupe_assistant_records`), the pure sub-analyses (`detect_gap_events`,
+  `compute_flags`, `count_user_prompts`, `context_growth`), and
+  `metrics_from_records` driven by tiny **in-memory** record lists — one focused
+  case per parsing rule, no fixture files needed — plus `render_extract` /
+  `collect_prompts_from_records`.
+- `test_wiki_tools.py` — wiki-specific helpers in `wiki_tools.py`
+  (`coerce_config_value`, `config_set`, `compute_staleness`, `resolve_from_time`,
+  `classify_session_status`, `build_plan`, `order_pages`/`render_index`/
+  `build_tag_map`/`render_tags`) plus `compute_session_metrics` on the committed
+  fixture (integration).
+- `test_contract.py` — cross-skill guard. Confirms session-retro's
+  `parse_sessions.py` imports this very `session_core` module (not a copy), and
+  that the JSONL and wiki cost paths converge on an identical priced record for
+  the fixture. Run after touching `session_core.py` or either command script.
+
+session-retro's pricing + scan layer is tested separately in
+`skills/session-retro/tests/`.
 
 ## The fixture (`fixtures/projects/c--fixture-proj/`)
 

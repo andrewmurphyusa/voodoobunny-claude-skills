@@ -6,6 +6,8 @@ description: Build or update an LLM-optimized Markdown wiki of Claude Code sessi
 <essential_principles>
 **Scripts count, Fable judges.** `scripts/wiki_tools.py` does all enumeration, parsing, token math, and index generation. Fable's job is the LLM-written content only: titles, summaries, outcomes, tags, cross-references. Never hand-compute what the script already outputs, and never hand-write `INDEX.md`/`tags/TAGS.md`/`wiki-meta.json` — `finalize` generates those.
 
+**Shared core.** The pricing-free parsing/dedup/token-math/fingerprint/gap-detection logic lives in `scripts/session_core.py`, imported by `wiki_tools.py` here AND by session-retro's `parse_sessions.py` (via a `sys.path` shim). This is the one canonical parser — the two skills are intentionally coupled so there is no second copy to drift. Edit parsing behavior in `session_core.py`, not in either command script.
+
 **Never read raw session JSONL wholesale.** Session files are large and full of duplicate/streaming noise. Go through `wiki_tools.py metrics` (numbers), `prompts` (verbatim user prompts), and `extract` (condensed transcript). Do not `cat`, `Read`, or `grep` a raw `.jsonl` file.
 
 **No source control, ever.** The target wiki folder may be a git repo. This skill never runs `git add`, `commit`, `push`, `pull`, or conflict resolution there — not even "helpfully". The user owns all source control.
@@ -92,11 +94,15 @@ All deterministic work runs through `scripts/wiki_tools.py` (Python 3, stdlib on
 </reference_index>
 
 <testing>
-`scripts/wiki_tools.py` is factored so the deterministic logic (parsing, token math, classification, index/tag rendering) lives in compute-only functions that return data; the `*_command` wrappers just print. Tests target those functions against a committed synthetic fixture — no dependency on live `~/.claude` data. Run:
+The deterministic logic lives in compute-only functions that return data (in `session_core.py` for parsing/metrics, in `wiki_tools.py` for config/plan/status/index rendering); the `*_command` wrappers just print. Tests target those functions against a committed synthetic fixture — no dependency on live `~/.claude` data. Run:
 
 ```
 python -m unittest discover -s skills/build-sessions-wiki/tests -p "test_*.py"
 ```
 
-`tests/test_contract.py` is a cross-skill guard: it feeds one fixture through both this skill's `wiki_tools.py` and session-retro's `parse_sessions.py` and asserts they still agree on token buckets and the source fingerprint. Run it after changing parsing/fingerprint logic in **either** script — the two carry duplicate copies by design (to stay self-contained), and this test catches drift. See `tests/README.md`.
+- `tests/test_session_core.py` — the shared parser: primitives, the pure sub-analyses (gap detection, flags, prompt counting, context growth), and `metrics_from_records` exercised with tiny in-memory record lists (one case per parsing rule, no fixture files needed).
+- `tests/test_wiki_tools.py` — wiki-specific: config, staleness, plan/classification, index/tag rendering, and `compute_session_metrics` on the committed fixture.
+- `tests/test_contract.py` — cross-skill guard: confirms session-retro imports this same `session_core`, and that the JSONL and wiki cost paths in `parse_sessions.py` produce identical priced records for one fixture. Run it after changing anything in `session_core.py` or either command script. See `tests/README.md`.
+
+session-retro has its own suite (`skills/session-retro/tests/`) for the pricing layer and scan aggregation.
 </testing>
