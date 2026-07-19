@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "My personal collection of Claude skills",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "plugins": [
     {
@@ -27,6 +27,20 @@
       "name": "facebook-article-fact-checker-adapter",
       "source": "./",
       "description": "Facebook-specific adapter that extracts article content shared via Facebook posts and delegates to article-fact-checker. Also analyzes whether the Facebook post itself adds misleading framing beyond the linked article.",
+      "version": "1.0.0",
+      "strict": true
+    },
+    {
+      "name": "design-with-fable",
+      "source": "./",
+      "description": "Turns a project idea or proposal into a complete planning artifact set: optional research doc, design doc, sized implementation plan (S/M/L/Huge) with independent verification, concurrency waves with gates, an orchestrator prompt runnable by Claude Code or Codex, a human-inputs doc, and an effort comparison.",
+      "version": "1.0.0",
+      "strict": true
+    },
+    {
+      "name": "ralph-waves",
+      "source": "./",
+      "description": "Executes a design-with-fable plan folder as an autonomous wave-by-wave implementation loop: sized sub-agent workers, one-size-below independent verification, wave gates, retry/escalation ladder, infrastructure-error recovery, and no commits ever.",
       "version": "1.0.0",
       "strict": true
     },
